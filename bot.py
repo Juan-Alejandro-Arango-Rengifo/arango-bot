@@ -20,6 +20,9 @@ import os
 
 TOKEN = os.getenv("TOKEN")  # usa variable de entorno en Railway
 CANAL = -1003602118784
+if not TOKEN:
+    raise RuntimeError("❌ TOKEN no encontrado en variables de entorno")
+
 
 # ---------------- BASE DE DATOS (SQLite) ----------------
 
@@ -271,3 +274,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
