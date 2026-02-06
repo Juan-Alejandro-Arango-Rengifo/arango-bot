@@ -11,71 +11,108 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
 )
+import sqlite3
+from datetime import datetime
 import random
+import os
 
-TOKEN = "8140604222:AAHccwCMbjtmJdLh16BFYxmqCmS438lfzRc"
+# ---------------- CONFIG ----------------
+
+TOKEN = os.getenv("TOKEN")  # usa variable de entorno en Railway
 CANAL = -1003602118784
 
-# 🔢 contador y almacenamiento en memoria
-pedido_id = 0
-pedidos = {}
+# ---------------- BASE DE DATOS (SQLite) ----------------
+
+conn = sqlite3.connect("arango.db", check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS domicilios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recogida TEXT,
+    entrega TEXT,
+    valor INTEGER,
+    estado TEXT,
+    restaurante_chat INTEGER,
+    domiciliario_id INTEGER,
+    codigo TEXT,
+    created_at TEXT
+)
+""")
+conn.commit()
 
 # ---------------- COMANDO START ----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
 
-    # 🔹 Viene desde el botón "Tomar pedido"
+    # 🔹 Viene desde el botón "Tomar domicilio"
     if args and args[0].startswith("tomar_"):
         try:
-            pid = int(args[0].split("_")[1])
+            did = int(args[0].split("_")[1])
         except:
-            await update.message.reply_text("❌ Pedido inválido")
+            await update.message.reply_text("❌ Domicilio inválido")
             return
 
-        if pid not in pedidos:
-            await update.message.reply_text("❌ Este pedido no existe")
+        cursor.execute(
+            "SELECT estado, restaurante_chat FROM domicilios WHERE id = ?",
+            (did,)
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            await update.message.reply_text("❌ Este domicilio no existe")
             return
 
-        if pedidos[pid]["estado"] != "abierto":
+        estado, restaurante_chat = row
+
+        if estado != "abierto":
             await update.message.reply_text(
-                f"❌ El pedido #{pid} ya fue tomado o cerrado"
+                f"❌ El domicilio #{did} ya fue tomado o cerrado"
             )
             return
 
-        codigo = f"AR{pid}-{random.randint(100,999)}"
+        codigo = f"AR{did}-{random.randint(100,999)}"
 
-        pedidos[pid]["estado"] = "tomado"
-        pedidos[pid]["tomado_por"] = update.effective_user.id
-        pedidos[pid]["codigo"] = codigo
+        cursor.execute("""
+        UPDATE domicilios
+        SET estado = ?, domiciliario_id = ?, codigo = ?
+        WHERE id = ?
+        """, (
+            "tomado",
+            update.effective_user.id,
+            codigo,
+            did
+        ))
+        conn.commit()
 
         # Confirmación al domiciliario
         await update.message.reply_text(
-            f"✅ Pedido #{pid} asignado a ti\n\n"
-            f"👤 Nombre: {update.effective_user.full_name}\n"
+            f"✅ Domicilio #{did} asignado a ti\n\n"
+            f"👤 Domiciliario: {update.effective_user.full_name}\n"
             f"🆔 Código de verificación: {codigo}"
         )
 
-        # 🔘 Botón marcar entregado (PRIVADO)
+        # Botón marcar entregado (privado)
         boton_entregado = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
                     "✅ Marcar como entregado",
-                    callback_data=f"entregado_{pid}"
+                    callback_data=f"entregado_{did}"
                 )
             ]
         ])
 
         await update.message.reply_text(
-            "Cuando entregues el pedido, presiona el botón:",
+            "Cuando entregues el domicilio, presiona el botón:",
             reply_markup=boton_entregado
         )
 
         # Avisar al restaurante
         await context.bot.send_message(
-            chat_id=pedidos[pid]["restaurante_chat"],
+            chat_id=restaurante_chat,
             text=(
-                f"🛵 Pedido #{pid} tomado\n\n"
+                f"🛵 Domicilio #{did} tomado\n\n"
                 f"👤 Domiciliario: {update.effective_user.full_name}\n"
                 f"🆔 Código: {codigo}\n\n"
                 f"⚠️ Entregar solo a quien diga este código"
@@ -86,12 +123,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Inicio normal
     await update.message.reply_text(
         "👋 Bienvenido a AranGo\n\n"
-        "/pedido → Crear un nuevo pedido"
+        "/domicilio → Crear un nuevo domicilio"
     )
 
-# ---------------- CREAR PEDIDO ----------------
+# ---------------- CREAR DOMICILIO ----------------
 
-async def pedido(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def domicilio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     context.user_data["paso"] = "recogida"
     await update.message.reply_text("📍 Dirección de recogida:")
@@ -99,7 +136,6 @@ async def pedido(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------- FLUJO DE MENSAJES ----------------
 
 async def mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global pedido_id
 
     if not context.user_data:
         return
@@ -113,44 +149,52 @@ async def mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif paso == "entrega":
         context.user_data["entrega"] = update.message.text
-        context.user_data["paso"] = "precio"
-        await update.message.reply_text("💰 Valor del domicilio:")
+        context.user_data["paso"] = "valor"
+        await update.message.reply_text(
+            "💰 Valor del domicilio (solo números)\nEjemplo: 7000"
+        )
 
-    elif paso == "precio":
-        texto_precio = update.message.text.strip()
+    elif paso == "valor":
+        texto_valor = update.message.text.strip()
 
-        # ❌ Validación numérica
-        if not texto_precio.isdigit():
+        if not texto_valor.isdigit():
             await update.message.reply_text(
                 "❌ El valor del domicilio debe ser solo numérico.\n"
-                "✅ Ingrese nuevamente un valor válido."
+                "✅ Ingresa nuevamente un valor válido."
             )
             return
 
         recogida = context.user_data["recogida"]
         entrega = context.user_data["entrega"]
-        precio = texto_precio
+        valor = int(texto_valor)
 
-        pedido_id += 1
+        cursor.execute("""
+        INSERT INTO domicilios
+        (recogida, entrega, valor, estado, restaurante_chat, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            recogida,
+            entrega,
+            valor,
+            "abierto",
+            update.effective_chat.id,
+            datetime.now().isoformat()
+        ))
+        conn.commit()
 
-        pedidos[pedido_id] = {
-            "estado": "abierto",
-            "tomado_por": None,
-            "codigo": None,
-            "restaurante_chat": update.effective_chat.id
-        }
+        domicilio_id = cursor.lastrowid
 
         mensaje = (
-            f"🛵 PEDIDO #{pedido_id} – AranGo\n"
+            f"🛵 DOMICILIO #{domicilio_id} – AranGo\n"
             f"📍 {recogida} → {entrega}\n"
-            f"💰 {precio}"
+            f"💰 {valor}"
         )
 
         boton = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
-                    "🚀 Tomar pedido",
-                    url=f"https://t.me/AranGoDelivery_bot?start=tomar_{pedido_id}"
+                    "🚀 Tomar domicilio",
+                    url=f"https://t.me/AranGoDelivery_bot?start=tomar_{domicilio_id}"
                 )
             ]
         ])
@@ -164,7 +208,7 @@ async def mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
 
         await update.message.reply_text(
-            f"✅ Pedido #{pedido_id} publicado correctamente"
+            f"✅ Domicilio #{domicilio_id} publicado correctamente"
         )
 
 # ---------------- MARCAR COMO ENTREGADO ----------------
@@ -173,33 +217,43 @@ async def marcar_entregado(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    pid = int(query.data.split("_")[1])
+    did = int(query.data.split("_")[1])
     user_id = query.from_user.id
 
-    if pid not in pedidos:
-        await query.edit_message_text("❌ Pedido no encontrado")
+    cursor.execute("""
+    SELECT estado, domiciliario_id, restaurante_chat
+    FROM domicilios
+    WHERE id = ?
+    """, (did,))
+    row = cursor.fetchone()
+
+    if not row:
+        await query.edit_message_text("❌ Domicilio no encontrado")
         return
 
-    pedido = pedidos[pid]
+    estado, domiciliario_id, restaurante_chat = row
 
-    if pedido["estado"] != "tomado":
-        await query.edit_message_text("❌ Este pedido no puede marcarse como entregado")
+    if estado != "tomado":
+        await query.edit_message_text("❌ Este domicilio no puede marcarse como entregado")
         return
 
-    if pedido["tomado_por"] != user_id:
-        await query.edit_message_text("❌ No estás autorizado para cerrar este pedido")
+    if domiciliario_id != user_id:
+        await query.edit_message_text("❌ No estás autorizado para cerrar este domicilio")
         return
 
-    pedidos[pid]["estado"] = "entregado"
+    cursor.execute(
+        "UPDATE domicilios SET estado = 'entregado' WHERE id = ?",
+        (did,)
+    )
+    conn.commit()
 
     await query.edit_message_text(
-        f"✅ Pedido #{pid} marcado como ENTREGADO"
+        f"✅ Domicilio #{did} marcado como ENTREGADO"
     )
 
-    # Avisar al restaurante
     await context.bot.send_message(
-        chat_id=pedido["restaurante_chat"],
-        text=f"📦 Pedido #{pid} entregado correctamente. ¡Gracias por usar AranGo!"
+        chat_id=restaurante_chat,
+        text=f"📦 Domicilio #{did} entregado correctamente. ¡Gracias por usar AranGo!"
     )
 
 # ---------------- MAIN ----------------
@@ -208,11 +262,11 @@ def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("pedido", pedido))
+    app.add_handler(CommandHandler("domicilio", domicilio))
     app.add_handler(CallbackQueryHandler(marcar_entregado, pattern=r"^entregado_\d+"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensajes))
 
-    print("🤖 Bot AranGo en ejecución...")
+    print("🤖 Bot AranGo (DOMICILIOS) en ejecución...")
     app.run_polling()
 
 if __name__ == "__main__":
