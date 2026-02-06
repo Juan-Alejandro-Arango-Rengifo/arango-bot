@@ -29,19 +29,30 @@ if not TOKEN:
 conn = sqlite3.connect("arango.db", check_same_thread=False)
 cursor = conn.cursor()
 
+# Tabla de domicilios
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS domicilios (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     recogida TEXT,
     entrega TEXT,
-    valor INTEGER,
+    precio INTEGER,
     estado TEXT,
     restaurante_chat INTEGER,
     domiciliario_id INTEGER,
     codigo TEXT,
-    created_at TEXT
+    fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """)
+
+# Tabla de domiciliarios (historial)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS domiciliarios (
+    user_id INTEGER PRIMARY KEY,
+    nombre TEXT,
+    total_domicilios INTEGER DEFAULT 0
+)
+""")
+
 conn.commit()
 
 # ---------------- COMANDO START ----------------
@@ -274,4 +285,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
