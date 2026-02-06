@@ -8,6 +8,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     ContextTypes,
+    CallbackQueryHandler,
     filters,
 )
 import random
@@ -38,7 +39,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if pedidos[pid]["estado"] != "abierto":
             await update.message.reply_text(
-                f"❌ Lo sentimos, el pedido #{pid} ya fue tomado por otro domiciliario"
+                f"❌ El pedido #{pid} ya fue tomado o cerrado"
             )
             return
 
@@ -53,6 +54,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Pedido #{pid} asignado a ti\n\n"
             f"👤 Nombre: {update.effective_user.full_name}\n"
             f"🆔 Código de verificación: {codigo}"
+        )
+
+        # 🔘 Botón marcar entregado (PRIVADO)
+        boton_entregado = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "✅ Marcar como entregado",
+                    callback_data=f"entregado_{pid}"
+                )
+            ]
+        ])
+
+        await update.message.reply_text(
+            "Cuando entregues el pedido, presiona el botón:",
+            reply_markup=boton_entregado
         )
 
         # Avisar al restaurante
@@ -98,9 +114,7 @@ async def mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif paso == "entrega":
         context.user_data["entrega"] = update.message.text
         context.user_data["paso"] = "precio"
-        await update.message.reply_text(
-            "💰 Valor del domicilio"
-        )
+        await update.message.reply_text("💰 Valor del domicilio:")
 
     elif paso == "precio":
         texto_precio = update.message.text.strip()
@@ -108,10 +122,10 @@ async def mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ❌ Validación numérica
         if not texto_precio.isdigit():
             await update.message.reply_text(
-                "❌ El valor del domicilio debe ser solo numérico.\n✅ Ingrese nuevamente un valor valido."
-                
+                "❌ El valor del domicilio debe ser solo numérico.\n"
+                "✅ Ingrese nuevamente un valor válido."
             )
-            return  # 🔁 vuelve a pedir el valor
+            return
 
         recogida = context.user_data["recogida"]
         entrega = context.user_data["entrega"]
@@ -153,6 +167,41 @@ async def mensajes(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Pedido #{pedido_id} publicado correctamente"
         )
 
+# ---------------- MARCAR COMO ENTREGADO ----------------
+
+async def marcar_entregado(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    pid = int(query.data.split("_")[1])
+    user_id = query.from_user.id
+
+    if pid not in pedidos:
+        await query.edit_message_text("❌ Pedido no encontrado")
+        return
+
+    pedido = pedidos[pid]
+
+    if pedido["estado"] != "tomado":
+        await query.edit_message_text("❌ Este pedido no puede marcarse como entregado")
+        return
+
+    if pedido["tomado_por"] != user_id:
+        await query.edit_message_text("❌ No estás autorizado para cerrar este pedido")
+        return
+
+    pedidos[pid]["estado"] = "entregado"
+
+    await query.edit_message_text(
+        f"✅ Pedido #{pid} marcado como ENTREGADO"
+    )
+
+    # Avisar al restaurante
+    await context.bot.send_message(
+        chat_id=pedido["restaurante_chat"],
+        text=f"📦 Pedido #{pid} entregado correctamente. ¡Gracias por usar AranGo!"
+    )
+
 # ---------------- MAIN ----------------
 
 def main():
@@ -160,6 +209,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("pedido", pedido))
+    app.add_handler(CallbackQueryHandler(marcar_entregado, pattern=r"^entregado_\d+"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensajes))
 
     print("🤖 Bot AranGo en ejecución...")
